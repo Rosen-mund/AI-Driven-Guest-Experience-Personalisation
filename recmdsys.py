@@ -5,132 +5,125 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-#Load Data from Database
-def load_data_from_db(db_path):# database path provided while calling the function in the UI
-    conn = sqlite3.connect(db_path)
-    preferences_table = pd.read_sql_query("SELECT * FROM Preferences", conn)
-    activities_table = pd.read_sql_query("SELECT * FROM Activities", conn)
-    interaction_table = pd.read_sql_query("SELECT * FROM Interactions", conn)
-    conn.close()
-    return preferences_table, activities_table, interaction_table
+def fetch_hotel_data(database_path):
+    try:
+        with sqlite3.connect(database_path) as conn:
+            guest_preferences = pd.read_sql_query("SELECT * FROM Preferences", conn)
+            hotel_activities = pd.read_sql_query("SELECT * FROM Activities", conn)
+            guest_interactions = pd.read_sql_query("SELECT * FROM Interactions", conn)
+        return guest_preferences, hotel_activities, guest_interactions
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return None, None, None
 
-# Preprocess Tables
-def preprocess_tables(preferences_table, activities_table, interaction_table):
-    preferences_table = preferences_table.replace("No Preference", 0).fillna(0)
+def clean_and_normalize_data(guest_preferences, hotel_activities, guest_interactions):
+    guest_preferences = guest_preferences.replace("No Preference", 0).fillna(0)
 
-    # Convert non-numeric preferences to numeric using hashing
-    for column in preferences_table.columns[1:]:
-        if preferences_table[column].dtype == "object":
-            preferences_table[column] = preferences_table[column].apply(
-                lambda x: 0 if x == "0" else hash(x) % 1000
-            )
+    for col in guest_preferences.columns[1:]:
+        if guest_preferences[col].dtype == "object":
+            guest_preferences[col] = guest_preferences[col].apply(lambda x: 0 if x == "0" else hash(str(x)) % 1000)
 
-    # Normalize preferences
     scaler = MinMaxScaler()
-    preferences_table.iloc[:, 1:] = scaler.fit_transform(preferences_table.iloc[:, 1:])
+    guest_preferences.iloc[:, 1:] = scaler.fit_transform(guest_preferences.iloc[:, 1:])
 
-    # Normalize ratings and time spent
-    interaction_table["Rating"] = MinMaxScaler().fit_transform(interaction_table[["Rating"]])
-    interaction_table["Time_Spent"] = MinMaxScaler().fit_transform(interaction_table[["Time_Spent"]])
+    if not guest_interactions.empty and 'Rating' in guest_interactions.columns and 'Time_Spent' in guest_interactions.columns:
+        guest_interactions[["Rating", "Time_Spent"]] = scaler.fit_transform(guest_interactions[["Rating", "Time_Spent"]])
 
-    return preferences_table, activities_table, interaction_table 
-print(activities_table.head())  # To see the first few rows
+    return guest_preferences, hotel_activities, guest_interactions
 
-# Generate Activity Embeddings
-def generate_activity_embeddings(activities_table):
-    if activities_table.empty:
-        raise ValueError("Activities table is empty. Ensure it contains valid data.")
+def create_activity_vectors(hotel_activities):
+    if hotel_activities.empty:
+        raise ValueError("Activities data is empty. Please check your database.")
 
-    # Using TF-IDF for category embeddings
-    vectorizer = TfidfVectorizer()
-    category_embeddings = vectorizer.fit_transform(activities_table['Category']).toarray()
+    tfidf = TfidfVectorizer()
+    category_vectors = tfidf.fit_transform(hotel_activities['Category']).toarray()
 
-    # Normalize numerical columns 
     scaler = MinMaxScaler()
-    numerical_columns = ["Rating", "Time_Spent"]
-    normalized_numerical = scaler.fit_transform(activities_table[numerical_columns])
-    # Combine embeddings
-    final_embeddings = []
-    for i in range(len(activities_table)):
-        combined = np.concatenate([category_embeddings[i], normalized_numerical[i]])
-        final_embeddings.append(combined)
+    numeric_features = scaler.fit_transform(hotel_activities[["Rating", "Time_Spent"]])
 
-    activities_table["embedding"] = final_embeddings
-    return activities_table
+    hotel_activities["vector"] = [
+        np.concatenate([cat_vec, num_feat])
+        for cat_vec, num_feat in zip(category_vectors, numeric_features)
+    ]
 
-# Content-Based Recommendation
-def content_based_recommendation(user_id, preferences_table, activities_table, interaction_table):
-    user_row = preferences_table.loc[preferences_table["Guest_ID"] == user_id]
-    if user_row.empty:
+    return hotel_activities
+
+def get_personalized_recommendations(guest_id, guest_preferences, hotel_activities, guest_interactions):
+    guest_data = guest_preferences.loc[guest_preferences["Guest_ID"] == guest_id]
+    if guest_data.empty:
         return []
-    user_preferences = user_row.iloc[:, 1:].values.flatten()
 
-    # Padding user preferences to match activity embedding size
-    embedding_size = len(activities_table.iloc[0]["embedding"])
-    if len(user_preferences) != embedding_size:
-        user_preferences = np.pad(user_preferences, (0, embedding_size - len(user_preferences)))
+    guest_vector = guest_data.iloc[:, 1:].values.flatten()
+    activity_vector_size = len(hotel_activities.iloc[0]["vector"])
+    
+    if len(guest_vector) < activity_vector_size:
+        guest_vector = np.pad(guest_vector, (0, activity_vector_size - len(guest_vector)))
+    elif len(guest_vector) > activity_vector_size:
+        guest_vector = guest_vector[:activity_vector_size]
 
+    completed_activities = set(hotel_activities[hotel_activities["Guest_ID"] == guest_id]["Activity"])
+    
     recommendations = []
-    completed_activities = activities_table[activities_table["Guest_ID"] == user_id]["Activity"].unique()
-
-
-    for _, activity in activities_table.iterrows():
+    for _, activity in hotel_activities.iterrows():
         if activity["Activity"] not in completed_activities:
-            activity_embedding = np.array(activity["embedding"])
-            similarity = cosine_similarity([user_preferences], [activity_embedding])[0][0]
+            activity_vector = np.array(activity["vector"])
+            similarity = cosine_similarity([guest_vector], [activity_vector])[0][0]
             recommendations.append((activity["Activity"], similarity))
 
-    recommendations.sort(key=lambda x: x[1], reverse=True)
-    return recommendations
+    return sorted(recommendations, key=lambda x: x[1], reverse=True)
 
-#Collaborative Filtering
-def collaborative_filtering(user_id, activities_table):
-    pivot_table = activities_table.pivot_table(
+def find_similar_guests(guest_id, hotel_activities):
+    activity_matrix = pd.pivot_table(
+        hotel_activities,
+        values="Rating",
         index="Guest_ID",
         columns="Activity",
-        aggfunc="size",  
-        fill_value=0     # Fill missing values with 0 (activity not completed)
+        fill_value=0
     )
 
-    # Ensure the user exists in the pivot table
-    if user_id not in pivot_table.index:
+    if guest_id not in activity_matrix.index:
         return []
 
-    # Calculate similarity matrix using cosine similarity
-    similarity_matrix = cosine_similarity(pivot_table)
-    similarity_df = pd.DataFrame(similarity_matrix, index=pivot_table.index, columns=pivot_table.index)
-    similar_users = similarity_df.loc[user_id].sort_values(ascending=False).index[1:6]
+    similarity_scores = pd.DataFrame(
+        cosine_similarity(activity_matrix),
+        index=activity_matrix.index,
+        columns=activity_matrix.index
+    )
 
-    # Generate recommendations based on activities of similar users
+    similar_guests = similarity_scores.loc[guest_id].sort_values(ascending=False).index[1:6]
+
+    guest_activities = set(hotel_activities[hotel_activities["Guest_ID"] == guest_id]["Activity"])
     recommendations = set()
-    user_activities = set(activities_table[activities_table["Guest_ID"] == user_id]["Activity"].unique())
-    for similar_user in similar_users:
-        similar_user_activities = set(activities_table[activities_table["Guest_ID"] == similar_user]["Activity"].unique())
-        recommendations.update(similar_user_activities - user_activities)
+
+    for similar_guest in similar_guests:
+        similar_guest_activities = set(hotel_activities[hotel_activities["Guest_ID"] == similar_guest]["Activity"])
+        recommendations.update(similar_guest_activities - guest_activities)
 
     return list(recommendations)
 
+def generate_recommendations(guest_id, guest_preferences, hotel_activities, guest_interactions):
+    content_based_recs = get_personalized_recommendations(guest_id, guest_preferences, hotel_activities, guest_interactions)
+    collaborative_recs = find_similar_guests(guest_id, hotel_activities)
 
-# Combine Recommendations
-def combined_recommendation(user_id, preferences_table, activities_table, interaction_table):
-    content_recs = content_based_recommendation(user_id, preferences_table, activities_table, interaction_table)
+    all_recommendations = {rec[0]: rec[1] for rec in content_based_recs}
+    for rec in collaborative_recs:
+        all_recommendations.setdefault(rec, 0)
 
-    # Collaborative filtering recommendations (using the Activity Table)
-    collab_recs = collaborative_filtering(user_id, activities_table)
-
-    # Combine recommendations with scores
-    combined_recs = {rec[0]: rec[1] for rec in content_recs}
-    for rec in collab_recs:
-        if rec not in combined_recs:
-            combined_recs[rec] = 0 
-    sorted_recommendations = sorted(combined_recs.items(), key=lambda x: x[1], reverse=True)
-    top_recommendations = [rec[0] for rec in sorted_recommendations[:2]]
+    top_recommendations = sorted(all_recommendations.items(), key=lambda x: x[1], reverse=True)[:2]
 
     if top_recommendations:
-        return f"Hey, would you like to try our {', '.join(top_recommendations)}?"
+        activities = ", ".join(rec[0] for rec in top_recommendations)
+        return f"Hey, would you like to try our {activities}?"
     return "View our events and activities."
 
-
-
-
+# Example usage
+if __name__ == "__main__":
+    db_path = "hotel_database.db"
+    preferences, activities, interactions = fetch_hotel_data(db_path)
+    if all((preferences is not None, activities is not None, interactions is not None)):
+        preferences, activities, interactions = clean_and_normalize_data(preferences, activities, interactions)
+        activities = create_activity_vectors(activities)
+        guest_id = "G0001"  # Example guest ID
+        recommendations = generate_recommendations(guest_id, preferences, activities, interactions)
+        print(recommendations)
 
