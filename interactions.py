@@ -1,62 +1,76 @@
-import sqlite3
-import random
-import numpy as np
-from datetime import datetime,timedelta
+import sqlite3 
+from sqlite3 import connect
+from faker import Faker
 
-conn = sqlite3.connect(r"hotel_database.db")
-cursor = conn.cursor()
+faker = Faker()
 
-def generate_interactions():
-    activities = ["Spa Kit", "Yoga Class", "Adventure Package", "Wellness Retreat", "Hiking Gear","Italian cuisine","Water sports package"]
-    guest_ids = [f"G{str(i).zfill(4)}" for i in range(1, 101)] 
-    for _ in range(500):  # Generate 500 random interactions
-        guest_id = random.choice(guest_ids)
-        activity = random.choice(activities)
-        rating = random.randint(1, 5)
-        time_spent = np.random.randint(10, 120)
+dbPromise = connect('hotel_database.db')
 
-        # Log interaction
-        cursor.execute('''
-        INSERT INTO Interactions (Guest_ID, Activity, Rating, Time_Spent, Timestamp)
-        VALUES (?, ?, ?, ?, ?)
-        ''', (guest_id, activity, rating, time_spent, datetime.now()))
-        conn.commit()
-        print(" Random interaction logged")
-
-# List of activities with their categories
 activities = {
-    'Wellness': ['spa', 'massage', 'yoga', 'meditation'],
-    'Sports': ['gym', 'tennis', 'swimming', 'golf'],
-    'Dining': ['buffet', 'room_service', 'fine_dining', 'cafe'],
-    'Events': ['conference', 'wedding', 'party', 'workshop'],
-    'Entertainment': ['movie_screening', 'live_music', 'game_room']
+  'Relaxation': ['spa_treatment', 'meditation_session', 'aromatherapy', 'hot_stone_massage'],
+  'Fitness': ['pilates', 'crossfit', 'aqua_aerobics', 'rock_climbing'],
+  'Culinary': ['cooking_class', 'wine_tasting', 'sushi_making', 'farm_to_table_experience'],
+  'Cultural': ['art_exhibition', 'local_market_tour', 'language_class', 'historical_walk'],
+  'Adventure': ['zip_lining', 'scuba_diving', 'horseback_riding', 'paragliding']
 }
 
-# activity data
-def populate_activities(num_guests=100, min_activities=5, max_activities=10):
-    start_date = datetime.now() - timedelta(days=30)  # Activities in the past 30 days
+async def generate_interactions(db, count=500):
+    stmt = await db.execute('''
+        INSERT INTO Interactions (Guest_ID, Activity, Rating, Time_Spent, Timestamp)
+        VALUES (?, ?, ?, ?, ?)
+    ''')
+
+    all_activities = [activity for sublist in activities.values() for activity in sublist]
+
+    for _ in range(count):
+        guest_id = f"G{faker.random_number(digits=4, fix_len=True)}"
+        activity = faker.random.choice(all_activities)
+        rating = faker.random_int(min=1, max=5)
+        time_spent = faker.random_int(min=10, max=120)
+        timestamp = faker.date_time_between(start_date='-30d', end_date='now')
+
+        await stmt.execute((guest_id, activity, rating, time_spent, timestamp.isoformat()))
+
+    await db.commit()
+    print(f"{count} random interactions logged")
+
+
+async def populate_activities(db, num_guests=100, min_activities=5, max_activities=10):
+    stmt = await db.execute('''
+        INSERT INTO Activities (Guest_ID, Activity, Category, Rating, Time_Spent, Date, Time_Of_Day)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''')
+
+    start_date = faker.date_time_between(start_date='-30d', end_date='now')
     time_of_day_options = ['morning', 'afternoon', 'evening']
 
-    for guest_id in [f"G{str(i+1).zfill(4)}" for i in range(num_guests)]:
-        num_activities = random.randint(min_activities, max_activities)
+    for i in range(num_guests):
+        guest_id = f"G{str(i + 1).zfill(4)}"
+        num_activities = faker.random_int(min=min_activities, max=max_activities)
+
         for _ in range(num_activities):
-            category = random.choice(list(activities.keys()))
-            activity = random.choice(activities[category])
-            rating = random.randint(1, 5)
-            time_spent = random.randint(30, 180)  # Time spent in minutes
-            date = start_date + timedelta(days=random.randint(0, 29))
-            time_of_day = random.choice(time_of_day_options)
+            category = faker.random.choice(list(activities.keys()))
+            activity = faker.random.choice(activities[category])
+            rating = faker.random_int(min=1, max=5)
+            time_spent = faker.random_int(min=30, max=180)
+            date = faker.date_time_between(start_date=start_date, end_date='now')
+            time_of_day = faker.random.choice(time_of_day_options)
 
-            # Insert into the table
-            cursor.execute('''
-            INSERT INTO Activities (Guest_ID, Activity, Category, Rating, Time_Spent, Date, Time_Of_Day)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (guest_id, activity, category, rating, time_spent, date.date(), time_of_day))
+            await stmt.execute((guest_id, activity, category, rating, time_spent, date.isoformat().split('T')[0], time_of_day))
 
-    conn.commit()
+    await db.commit()
     print("Activities table populated successfully!")
 
 
-if __name__ == "__main__":
-    #populate_activities()
-    generate_interactions()
+async def main():
+    try:
+        db = await dbPromise
+        await generate_interactions(db)
+        await populate_activities(db)
+    except Exception as error:
+        print("An error occurred:", error)
+    finally:
+        await db.close()
+
+import asyncio
+asyncio.run(main())
