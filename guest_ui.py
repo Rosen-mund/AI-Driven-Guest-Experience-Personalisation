@@ -2,9 +2,8 @@ import streamlit as st
 import sqlite3
 from sentiment_labelling import analyze_review_with_alert, log_sentiment, log_interaction
 from recmdsys import generate_recommendations, fetch_hotel_data, clean_and_normalize_data, create_activity_vectors
-import base64
 
-# Sample user credentials
+# Sample user credentials (unchanged)
 USER_DB = {
     "Jhondoe1@example.com": {"password": "password123", "Guest_ID": "G0001"},
     "joshep1@example.com": {"password": "password456", "Guest_ID": "G0002"},
@@ -32,13 +31,12 @@ def set_page_config():
     """, unsafe_allow_html=True)
 
 def header():
-    st.image("hotel_logo.png", width=200)
     st.title("The Amethyst Estate")
 
 def sidebar():
     with st.sidebar:
         st.header("Navigation")
-        page = st.radio("Go to", ["Login", "Feedback"])
+        page = st.radio("Go to", ["Login", "Feedback", "Profile Management"])
     return page
 
 def login_form():
@@ -106,12 +104,47 @@ def show_recommendations():
                 activities,
                 interactions
             )
-            if recommendations and isinstance(recommendations, str):
-                st.success(f"Recommendations for You: {recommendations}")
-            else:
-                st.info("No specific recommendations available at this time.")
+            st.success(recommendations)
         else:
             st.error("Unable to fetch data from the database. Please try again later.")
+
+def profile_management():
+    st.subheader("Profile Management")
+    guest_id = st.session_state["guest_id"]
+    
+    # Fetch current profile data
+    cursor.execute("SELECT * FROM Guests WHERE Guest_ID = ?", (guest_id,))
+    guest_data = cursor.fetchone()
+    
+    cursor.execute("SELECT * FROM Preferences WHERE Guest_ID = ?", (guest_id,))
+    preferences_data = cursor.fetchone()
+    
+    if guest_data and preferences_data:
+        with st.form("profile_form"):
+            name = st.text_input("Name", value=guest_data[1])
+            email = st.text_input("Email", value=guest_data[2])
+            dining = st.text_input("Dining Preference", value=preferences_data[1])
+            sports = st.text_input("Sports Preference", value=preferences_data[2])
+            wellness = st.text_input("Wellness Preference", value=preferences_data[3])
+            room_preference = st.text_input("Room Preference", value=preferences_data[4])
+            pricing = st.text_input("Pricing Preference", value=preferences_data[5])
+            
+            if st.form_submit_button("Update Profile"):
+                try:
+                    cursor.execute("""
+                        UPDATE Guests SET Name = ?, Email = ? WHERE Guest_ID = ?
+                    """, (name, email, guest_id))
+                    cursor.execute("""
+                        UPDATE Preferences 
+                        SET Dining = ?, Sports = ?, Wellness = ?, Room_Preference = ?, Pricing = ?
+                        WHERE Guest_ID = ?
+                    """, (dining, sports, wellness, room_preference, pricing, guest_id))
+                    conn.commit()
+                    st.success("Profile updated successfully!")
+                except sqlite3.Error as e:
+                    st.error(f"An error occurred: {e}")
+    else:
+        st.error("Unable to fetch profile data. Please try again later.")
 
 def main():
     set_page_config()
@@ -123,14 +156,16 @@ def main():
 
     if page == "Login" and not st.session_state.get("logged_in", False):
         login_form()
-    elif page == "Feedback" or st.session_state.get("logged_in", False):
-        if not st.session_state.get("logged_in", False):
-            st.warning("Please log in first.")
-            login_form()
-        else:
+    elif not st.session_state.get("logged_in", False):
+        st.warning("Please log in first.")
+        login_form()
+    else:
+        if page == "Feedback":
             feedback_form()
             display_ads()
             show_recommendations()
+        elif page == "Profile Management":
+            profile_management()
 
 if __name__ == "__main__":
     main()
