@@ -40,7 +40,7 @@ The AI-Driven Guest Experience Personalization System is a cutting-edge solution
   - Groq API key
   - LLM (llama-3.3-70b-versatile)
   - Streamlit
-## Sytem WorkFlow 
+## System WorkFlow 
 ![mermaid-diagram-2025-01-19-153310](https://github.com/user-attachments/assets/54c3faa8-c56f-4a1a-a2bf-454151609e4a)
 
 
