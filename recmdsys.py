@@ -114,16 +114,33 @@ def generate_recommendations(guest_id, guest_preferences, hotel_activities, gues
     if top_recommendations:
         activities = ", ".join(rec[0] for rec in top_recommendations)
         return f"Hey, would you like to try our {activities}?"
-    return "View our events and activities."
+    else:
+        # Get a list of all available activities
+        all_activities = hotel_activities['Activity'].tolist()
+        if all_activities:
+            # Randomly select up to 3 activities
+            sample_size = min(3, len(all_activities))
+            random_activities = np.random.choice(all_activities, size=sample_size, replace=False)
+            activities_str = ", ".join(random_activities)
+            return f"Discover something new! How about trying {activities_str}?"
+        else:
+            return "Explore our wide range of exciting activities and events!"
 
 # Example usage
 if __name__ == "__main__":
     db_path = "hotel_database.db"
     preferences, activities, interactions = fetch_hotel_data(db_path)
     if all((preferences is not None, activities is not None, interactions is not None)):
+        print("Data fetched successfully.")
         preferences, activities, interactions = clean_and_normalize_data(preferences, activities, interactions)
+        print("Data cleaned and normalized.")
         activities = create_activity_vectors(activities)
+        print("Activity vectors created.")
         guest_id = "G0001"  # Example guest ID
+        print(f"Generating recommendations for guest {guest_id}...")
         recommendations = generate_recommendations(guest_id, preferences, activities, interactions)
+        print("Recommendations:")
         print(recommendations)
+    else:
+        print("Error: Unable to fetch data from the database.")
 
