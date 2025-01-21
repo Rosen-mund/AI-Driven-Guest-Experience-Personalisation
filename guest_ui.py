@@ -1,5 +1,6 @@
 import streamlit as st
 import sqlite3
+import re
 from sentiment_labelling import analyze_review_with_alert, log_sentiment, log_interaction
 from recmdsys import generate_recommendations, fetch_hotel_data, clean_and_normalize_data, create_activity_vectors
 
@@ -36,7 +37,7 @@ def header():
 def sidebar():
     with st.sidebar:
         st.header("Navigation")
-        page = st.radio("Go to", ["Login", "Feedback", "Profile Management"])
+        page = st.radio("Go to", ["Login", "Register", "Feedback", "Profile Management"])
     return page
 
 def login_form():
@@ -54,6 +55,47 @@ def login_form():
             else:
                 st.error("Invalid email or password!")
 
+def register_form():
+    st.subheader("Register New User")
+    with st.form("register_form"):
+        name = st.text_input("Full Name")
+        email = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+        confirm_password = st.text_input("Confirm Password", type="password")
+        submit = st.form_submit_button("Register")
+
+        if submit:
+            if not name or not email or not password:
+                st.error("Please fill in all fields.")
+            elif password != confirm_password:
+                st.error("Passwords do not match.")
+            elif not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+                st.error("Invalid email format.")
+            else:
+                # Check if email already exists
+                cursor.execute("SELECT * FROM Guests WHERE Email = ?", (email,))
+                if cursor.fetchone():
+                    st.error("Email already registered.")
+                else:
+                    # Generate a new Guest_ID
+                    cursor.execute("SELECT MAX(CAST(SUBSTR(Guest_ID, 2) AS INTEGER)) FROM Guests")
+                    max_id = cursor.fetchone()[0]
+                    new_id = f"G{str(max_id + 1).zfill(4)}"
+
+                    # Insert new user into Guests table
+                    cursor.execute("INSERT INTO Guests (Guest_ID, Name, Email) VALUES (?, ?, ?)",
+                                   (new_id, name, email))
+                    
+                    # Insert default preferences
+                    cursor.execute("INSERT INTO Preferences (Guest_ID, Dining, Sports, Wellness, Room_Preference, Pricing) VALUES (?, ?, ?, ?, ?, ?)",
+                                   (new_id, "Not Specified", "Not Specified", "Not Specified", "Not Specified", "Not Specified"))
+                    
+                    # Add user to USER_DB (in a real application, you'd use proper authentication)
+                    USER_DB[email] = {"password": password, "Guest_ID": new_id}
+                    
+                    conn.commit()
+                    st.success("Registration successful! You can now log in.")
+
 def feedback_form():
     st.subheader("Your Thoughts Are Valuable to Us")
     st.write(f"Logged in as: {st.session_state['user_email']} (Guest ID: {st.session_state['guest_id']})")
@@ -67,7 +109,7 @@ def feedback_form():
                 "pricing": "Affordable", "room preferences": "Ocean view",
             }
             formatted_preferences = ", ".join(f"{key}: {value}" for key, value in preferences.items())
-            sentiment, response, department = analyze_review_with_alert(review_input, formatted_preferences)
+            sentiment, response, department = analyze_review_with_alert(review_input, formatted_preferences, st.session_state["guest_id"])
             log_sentiment(st.session_state["guest_id"], review_input, sentiment, response)
             st.session_state["review_submitted"] = True 
             st.success("Thank you! Your review has been submitted successfully.")
@@ -104,7 +146,12 @@ def show_recommendations():
                 activities,
                 interactions
             )
-            st.success(recommendations)
+            
+            st.subheader(recommendations['message'])
+            for rec in recommendations['recommendations']:
+                st.write(f"• **{rec['activity']}** ({rec['category']})")
+                st.write(f"  {rec['description']}")
+                st.write("---")
         else:
             st.error("Unable to fetch data from the database. Please try again later.")
 
@@ -156,6 +203,8 @@ def main():
 
     if page == "Login" and not st.session_state.get("logged_in", False):
         login_form()
+    elif page == "Register":
+        register_form()
     elif not st.session_state.get("logged_in", False):
         st.warning("Please log in first.")
         login_form()
