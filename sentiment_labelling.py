@@ -8,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from dotenv import load_dotenv
 import sqlite3
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 # Set up logging for tracking alerts in the terminal
 logging.basicConfig(level=logging.INFO)
@@ -24,32 +25,32 @@ SLACK_WEBHOOK_URL = os.getenv('SLACK_WEBHOOK_URL')
 # Groq API URL for LLaMA 3.3 model
 API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Prompt template for LLM analysis (unchanged)
+# Prompt for sentiment analysis
 PROMPT = """
-You are a helpful assistant analyzing hotel reviews and guest preferences. The review below contains guest feedback and preference details. Analyze the feedback, correlate it with guest preferences, and determine if the sentiment is positive, neutral, or negative. Provide a personalized and empathetic response tailored for the guest.
+You are an attentive assistant specializing in analyzing hotel reviews and guest preferences. The review below provides feedback about the guest's experience and preferences during their stay. Analyze the feedback, determine the sentiment (positive, neutral, or negative), and craft a personalized, empathetic response. Address specific concerns, highlight positives, and suggest relevant improvements or future offerings based on their preferences.
 
 Examples:
+
 Positive Feedback Example:
-Feedback: The spa was amazing, and the staff were very polite.
-Preferences: Wellness
-Response: Thank you for appreciating our wellness services! We're glad that you enjoyed your stay. Next time, consider trying our yoga sessions to enhance your wellness experience.
+Feedback: The staff was extremely courteous, and the rooftop pool had breathtaking views.
+Preferences: Hospitality, Amenities
+Response: Thank you for your kind feedback! We're delighted that you enjoyed our hospitality and the rooftop pool. We'd love to welcome you back soon for another memorable experience.
 
 Negative Feedback Example:
-Feedback: The room was dirty, and the AC didn't work.
-Preferences: Room Preferences, Maintenance
-Response: We sincerely apologize for the inconvenience caused by room cleanliness and AC issues. We've shared your feedback with our housekeeping and maintenance teams. As a gesture of goodwill, we'd like to offer a free room upgrade during your next stay.
+Feedback: The room was noisy, and the restaurant service was very slow.
+Preferences: Room Preferences, Dining Experience
+Response: We sincerely apologize for the noise disturbance and delays in restaurant service. Your concerns have been shared with our team to ensure improvements. To make up for this, we'd like to offer you a discount on your next stay.
 
 Neutral Feedback Example:
-Feedback: The check-in process was okay, but it could be faster.
-Preferences: General
-Response: Thank you for your feedback! We're always looking to improve our check-in experience.Feel free to use our express check-in feature for a quicker process next time.
+Feedback: The room was nice, but the gym equipment could use an upgrade.
+Preferences: Room Comfort, Fitness Facilities
+Response: Thank you for sharing your feedback! We're happy to hear you liked the room. We're currently evaluating upgrades to our gym equipment and hope to offer an improved fitness experience soon.
 
 Review: {review_text}
 Preferences: {preferences}
 Sentiment and Response:
 """
 
-# Function to send email alerts
 def send_email_alert(to_email, subject, body):
     """
     Sends an email alert to the specified email address.
@@ -59,7 +60,7 @@ def send_email_alert(to_email, subject, body):
         msg['From'] = EMAIL_USER
         msg['To'] = to_email
         msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
+        msg.attach(MIMEText(body, 'html'))
 
         with smtplib.SMTP(EMAIL_HOST, EMAIL_PORT) as server:
             server.starttls()
@@ -71,8 +72,7 @@ def send_email_alert(to_email, subject, body):
         print(f"Failed to send email alert: {e}")
         return False
 
-# Function to analyze review and generate sentiment, response, and department alert
-def analyze_review_with_alert(review_text, preferences):
+def analyze_review_with_alert(review_text, preferences, guest_id):
     """
     Uses LLM to analyze a review and generate sentiment, response, and department alert.
     """
@@ -91,6 +91,7 @@ def analyze_review_with_alert(review_text, preferences):
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
+    
     # send POST request to the groq API for inference
     response = requests.post(API_URL, headers=headers, json=data)
 
@@ -99,14 +100,13 @@ def analyze_review_with_alert(review_text, preferences):
 
         sentiment = "Negative" if "apologize" in result_text else ("Positive" if "thank you" in result_text.lower() else "Neutral")
 
-        # Generate department alert if sentiment is negative
-        alert = None
-        if sentiment == "Negative":
-            alert = extract_department_alert_llm(review_text)
-            if alert:
-                email_body = f"Alert: {alert}\n\nReview: {review_text}"
-                send_email_alert("anweshab018@gmail.com", "Negative Review Alert", email_body)
-                send_slack_alert(f"Negative review alert: {alert}\n\nReview: {review_text}")
+        # Generate alert for both positive and negative reviews
+        alert = extract_department_alert_llm(review_text)
+        recommendations = generate_recommendations(guest_id)
+        
+        email_body = create_alert_message(sentiment, alert, review_text, recommendations)
+        send_email_alert("springboardmentor543@gmail.com", f"{sentiment.upper()} Review Alert", email_body)
+        send_slack_alert(email_body)
 
         return sentiment, result_text.strip(), alert
 
@@ -114,8 +114,40 @@ def analyze_review_with_alert(review_text, preferences):
         print(f"Error {response.status_code}: {response.json()}")
         return None, None, None
 
-# Function to log sentiment analysis to the Reviews table
+def create_alert_message(sentiment, alert, review_text, recommendations):
+    """
+    Creates an HTML formatted alert message including recommendations.
+    """
+    color = "#FF0000" if sentiment == "Negative" else "#03b323"
+    importance = "High" if sentiment == "Negative" else "Normal"
+    
+    recommendation_html = ""
+    if recommendations['status'] == 'success':
+        recommendation_html = f"<h3>{recommendations['message']}</h3><ul>"
+        for rec in recommendations['recommendations']:
+            recommendation_html += f"<li><strong>{rec['activity']}</strong> ({rec['category']}): {rec['description']}</li>"
+        recommendation_html += "</ul>"
+    else:
+        recommendation_html = f"<p>{recommendations['message']}</p>"
+    
+    message = f"""
+    <html>
+    <body>
+    <h2 style='color: {color};'>New {sentiment} Review</h2>
+    <p><strong>Importance:</strong> {importance}</p>
+    <p><strong>Department:</strong> {alert}</p>
+    <p><strong>Review:</strong> {review_text}</p>
+    <h3>Recommendations for the guest:</h3>
+    {recommendation_html}
+    </body>
+    </html>
+    """
+    return message
+
 def log_sentiment(guest_id, review, sentiment, suggestion):
+    """
+    Logs the sentiment analysis results to the database.
+    """
     try:
         conn = sqlite3.connect("hotel_database.db")
         cursor = conn.cursor()
@@ -130,7 +162,6 @@ def log_sentiment(guest_id, review, sentiment, suggestion):
     finally:
         conn.close()
         
-# Function to extract department responsible for negative feedback using LLM
 def extract_department_alert_llm(review_text):
     """
     Uses LLM to identify the department responsible for addressing feedback.
@@ -163,7 +194,6 @@ Department Responsible:
         print(f"Error {response.status_code}: {response.json()}")
         return "General feedback - Further investigation needed."
 
-# Function to log interactions
 def log_interaction(guest_id, activity, rating=None, time_spent=None):
     """
     Logs a guest's interaction in the Interactions table.
@@ -182,21 +212,26 @@ def log_interaction(guest_id, activity, rating=None, time_spent=None):
     finally:
         conn.close()
 
-# Function to send department-specific emails
-def send_department_email(department, subject, message):
-    """
-    Sends an email to a specific department.
-    """
-    department_email = f"{department.lower()}@amethystestate.com"
-    return send_email_alert(department_email, subject, message)
-
-# Function to send Slack alerts
 def send_slack_alert(message):
     """
-    Sends an alert to Slack for negative reviews.
+    Sends an alert to Slack for reviews.
     """
     try:
-        response = requests.post(SLACK_WEBHOOK_URL, json={"text": message})
+        soup = BeautifulSoup(message, 'html.parser')
+        plain_text = soup.get_text()
+        
+        # Format the plain text for better readability in Slack
+        formatted_text = ""
+        for line in plain_text.split('\n'):
+            line = line.strip()
+            if line.endswith(':'):
+                formatted_text += f"*{line}*\n"
+            elif line.startswith('•'):
+                formatted_text += f"  • {line[1:].strip()}\n"
+            else:
+                formatted_text += f"{line}\n"
+        
+        response = requests.post(SLACK_WEBHOOK_URL, json={"text": formatted_text})
         response.raise_for_status()
         print("Slack alert sent successfully")
         return True
@@ -204,21 +239,81 @@ def send_slack_alert(message):
         print(f"Failed to send Slack alert: {e}")
         return False
 
-# Main execution (for testing purposes)
+def generate_recommendations(guest_id):
+    """
+    Generates personalized recommendations based on guest preferences.
+    """
+    try:
+        conn = sqlite3.connect("hotel_database.db")
+        cursor = conn.cursor()
+        
+        # Fetch guest preferences
+        cursor.execute("SELECT * FROM Preferences WHERE Guest_ID = ?", (guest_id,))
+        preferences = cursor.fetchone()
+        
+        if not preferences:
+            return {
+                'status': 'no_activities',
+                'message': 'We recommend trying our spa services and joining our guided nature walks.'
+            }
+            
+        dining = preferences[1]
+        sports = preferences[2]
+        wellness = preferences[3]
+        
+        recs = []
+        # Only add recommendations for preferences that exist and aren't empty/null
+        if dining and dining.strip():
+            recs.append({
+                'activity': 'Dining',
+                'category': 'Restaurant',
+                'description': f"Try our {dining} restaurant"
+            })
+        if sports and sports.strip():
+            recs.append({
+                'activity': 'Sports',
+                'category': 'Activity',
+                'description': f"Join our {sports} activities"
+            })
+        if wellness and wellness.strip():
+            recs.append({
+                'activity': 'Wellness',
+                'category': 'Treatment',
+                'description': f"Experience our {wellness} treatments"
+            })
+        
+        if recs:
+            return {
+                'status': 'success',
+                'message': 'Based on your preferences, we recommend:',
+                'recommendations': recs
+            }
+        else:
+            # Return default message if no valid preferences were found
+            return {
+                'status': 'no_activities',
+                'message': 'We recommend trying our spa services and joining our guided nature walks.'
+            }
+            
+    except sqlite3.Error as e:
+        print(f"Database error: {e}")
+        return {
+            'status': 'error',
+            'message': 'We recommend trying our spa services and joining our guided nature walks.'
+        }
+    finally:
+        conn.close()
+
 if __name__ == "__main__":
     # Test the sentiment analysis and alert system
     test_review = "The room was dirty and the service was terrible."
     test_preferences = ["Room Preference: Clean", "Service: Excellent"]
-    sentiment, response, alert = analyze_review_with_alert(test_review, test_preferences)
+    sentiment, response, alert = analyze_review_with_alert(test_review, test_preferences, "G0022")
     print(f"Sentiment: {sentiment}")
     print(f"Response: {response}")
     print(f"Alert: {alert}")
 
-    # Test sending a department email
-    send_department_email("Housekeeping", "Room Cleanliness Complaint", "A guest reported that their room was not properly cleaned. Please investigate and take necessary action.")
-
     # Test logging an interaction
-    log_interaction("G0001", "Spa Visit", rating=5, time_spent=120)
+    log_interaction("G0022", "Spa Visit", rating=5, time_spent=120)
 
     print("Test execution completed.")
-
