@@ -109,22 +109,52 @@ def generate_recommendations(guest_id, guest_preferences, hotel_activities, gues
     for rec in collaborative_recs:
         all_recommendations.setdefault(rec, 0)
 
-    top_recommendations = sorted(all_recommendations.items(), key=lambda x: x[1], reverse=True)[:2]
+    top_recommendations = sorted(all_recommendations.items(), key=lambda x: x[1], reverse=True)[:3]
 
     if top_recommendations:
-        activities = ", ".join(rec[0] for rec in top_recommendations)
-        return f"Hey, would you like to try our {activities}?"
+        recommendations = []
+        for activity, score in top_recommendations:
+            activity_info = hotel_activities[hotel_activities['Activity'] == activity].iloc[0]
+            recommendation = {
+                'activity': activity,
+                'category': activity_info['Category'],
+                'description': f"Enjoy our {activity} experience in the {activity_info['Category']} category.",
+                'score': f"{score:.2f}"
+            }
+            recommendations.append(recommendation)
+
+        return {
+            'status': 'personalized',
+            'message': "Based on your preferences and past activities, we think you'll love these experiences:",
+            'recommendations': recommendations
+        }
     else:
-        # Get a list of all available activities
         all_activities = hotel_activities['Activity'].tolist()
         if all_activities:
-            # Randomly select up to 3 activities
             sample_size = min(3, len(all_activities))
             random_activities = np.random.choice(all_activities, size=sample_size, replace=False)
-            activities_str = ", ".join(random_activities)
-            return f"Discover something new! How about trying {activities_str}?"
+            recommendations = []
+            for activity in random_activities:
+                activity_info = hotel_activities[hotel_activities['Activity'] == activity].iloc[0]
+                recommendation = {
+                    'activity': activity,
+                    'category': activity_info['Category'],
+                    'description': f"Discover our {activity} experience in the {activity_info['Category']} category.",
+                    'score': 'N/A'
+                }
+                recommendations.append(recommendation)
+
+            return {
+                'status': 'random',
+                'message': "Discover something new with these exciting activities:",
+                'recommendations': recommendations
+            }
         else:
-            return "Explore our wide range of exciting activities and events!"
+            return {
+                'status': 'no_activities',
+                'message': "Explore our wide range of exciting activities and events!",
+                'recommendations': []
+            }
 
 # Example usage
 if __name__ == "__main__":
@@ -136,7 +166,7 @@ if __name__ == "__main__":
         print("Data cleaned and normalized.")
         activities = create_activity_vectors(activities)
         print("Activity vectors created.")
-        guest_id = "G0001"  # Example guest ID
+        guest_id = "G0022"  # Example guest ID
         print(f"Generating recommendations for guest {guest_id}...")
         recommendations = generate_recommendations(guest_id, preferences, activities, interactions)
         print("Recommendations:")
